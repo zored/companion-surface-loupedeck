@@ -31,6 +31,14 @@ export function buildHapticConfigFields(): SomeCompanionInputField[] {
 			isVisibleExpression: `$(options:hapticPressPattern) != 'none'`,
 		},
 		{
+			id: 'hapticHoldControls',
+			type: 'textinput',
+			label: 'Haptic on hold: controls',
+			tooltip: 'Comma-separated control ids (eg encoder-1-0) that vibrate on hold. Empty for all',
+			default: '',
+			isVisibleExpression: `$(options:hapticPressPattern) != 'none'`,
+		},
+		{
 			id: 'hapticSlidePattern',
 			type: 'dropdown',
 			label: 'Haptic ticks while sliding on a strip',
@@ -65,6 +73,7 @@ export class Haptics {
 
 	#pressPattern: LoupedeckVibratePattern | null = null
 	#holdMs = 0
+	#holdControls = new Set<string>()
 	#slidePattern: LoupedeckVibratePattern | null = null
 	#slideStep = 20
 	#lastSlideTick = 0
@@ -77,6 +86,12 @@ export class Haptics {
 	updateConfig(config: Record<string, any>): void {
 		this.#pressPattern = parsePattern(config.hapticPressPattern)
 		this.#holdMs = Number(config.hapticHoldMs) || 0
+		this.#holdControls = new Set(
+			String(config.hapticHoldControls ?? '')
+				.split(',')
+				.map((id) => id.trim())
+				.filter((id) => id !== ''),
+		)
 		this.#slidePattern = parsePattern(config.hapticSlidePattern)
 		this.#slideStep = Math.max(1, Number(config.hapticSlideStep) || 20)
 	}
@@ -87,7 +102,7 @@ export class Haptics {
 		this.#vibrate(pattern)
 
 		this.release(controlId)
-		if (this.#holdMs > 0) {
+		if (this.#holdMs > 0 && (this.#holdControls.size === 0 || this.#holdControls.has(controlId))) {
 			this.#holdTimers.set(
 				controlId,
 				setTimeout(() => {
