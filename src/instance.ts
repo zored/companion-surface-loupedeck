@@ -170,6 +170,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 					// In buttons mode the strip cells are pressed by touchstart/touchend; only the position is reported here
 					if (mode !== 'slider') {
 						if (display === LoupedeckDisplayId.Left) this.#stripDrag.move(touch.id, touch.y)
+						else this.#stripDrag.slide(touch.id, touch.y)
 						continue
 					}
 					this.#displayFaderValues[display].value = val
