@@ -19,6 +19,7 @@ import {
 } from './util.js'
 import { ImageWriteQueue } from './write-queue.js'
 import { Haptics } from './haptics.js'
+import { StripDrag } from './strip-drag.js'
 
 interface DisplayFaderValue {
 	color: RGBColor
@@ -42,6 +43,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 	readonly #useTouchStrips: boolean
 	readonly #supportsSplitButtons: boolean
 	readonly #haptics: Haptics
+	readonly #stripDrag: StripDrag
 
 	/** Configured strip mode. Only meaningful when #supportsSplitButtons is true */
 	#configStripMode: 'buttons' | 'slider' = 'buttons'
@@ -95,6 +97,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#useTouchStrips = useTouchStrips
 		this.#supportsSplitButtons = supportsSplitButtons
 		this.#haptics = new Haptics(deck, this.#logger)
+		this.#stripDrag = new StripDrag(this.#logger)
 
 		this.#deck.on('error', (e) => context.disconnect(e))
 
@@ -134,6 +137,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#deck.on('touchend', (data) => {
 			for (const touch of data.changedTouches) {
 				this.#haptics.slideEnd(touch.id)
+				this.#stripDrag.end(touch.id)
 				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
 					this.#haptics.release(touch.target.control.id)
 					context.keyUpById(touch.target.control.id)
@@ -164,7 +168,10 @@ export class LoupedeckWrapper implements SurfaceInstance {
 					context.sendVariableValue(variable, this.#invertFaderValues ? 256 - val : val)
 
 					// In buttons mode the strip cells are pressed by touchstart/touchend; only the position is reported here
-					if (mode !== 'slider') continue
+					if (mode !== 'slider') {
+						if (display === LoupedeckDisplayId.Left) this.#stripDrag.move(touch.id, touch.y)
+						continue
+					}
 					this.#displayFaderValues[display].value = val
 					this.#faderDrawQueue.queue(display, this.#displayFaderValues[display])
 				}
