@@ -20,6 +20,7 @@ import {
 import { ImageWriteQueue } from './write-queue.js'
 import { Haptics } from './haptics.js'
 import { StripDrag } from './strip-drag.js'
+import { TileSwipe } from './tile-swipe.js'
 
 interface DisplayFaderValue {
 	color: RGBColor
@@ -44,6 +45,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 	readonly #supportsSplitButtons: boolean
 	readonly #haptics: Haptics
 	readonly #stripDrag: StripDrag
+	readonly #tileSwipe: TileSwipe
 
 	/** Configured strip mode. Only meaningful when #supportsSplitButtons is true */
 	#configStripMode: 'buttons' | 'slider' = 'buttons'
@@ -98,6 +100,11 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#supportsSplitButtons = supportsSplitButtons
 		this.#haptics = new Haptics(deck, this.#logger)
 		this.#stripDrag = new StripDrag(this.#logger)
+		this.#tileSwipe = new TileSwipe(this.#logger)
+		const releaseTile = (controlId: string) => {
+			this.#haptics.release(controlId)
+			context.keyUpById(controlId)
+		}
 
 		this.#deck.on('error', (e) => context.disconnect(e))
 
@@ -120,6 +127,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			for (const touch of data.changedTouches) {
 				this.#stripEdge('start', touch.target.screen, touch.y)
 				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
+					this.#tileSwipe.start(touch.id, touch.target.control.id, touch.x, touch.y)
 					this.#haptics.press(touch.target.control.id)
 					context.keyDownById(touch.target.control.id)
 				} else if (touch.target.screen == LoupedeckDisplayId.Wheel) {
@@ -139,9 +147,8 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			for (const touch of data.changedTouches) {
 				this.#stripDrag.end(touch.id)
 				this.#stripEdge('end', touch.target.screen, touch.y)
-				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
-					this.#haptics.release(touch.target.control.id)
-					context.keyUpById(touch.target.control.id)
+				if (this.#tileSwipe.get(touch.id)) {
+					this.#tileSwipe.end(touch.id, releaseTile)
 				} else if (touch.target.screen == LoupedeckDisplayId.Wheel) {
 					const wheelControl = this.#deck.controls.find((c) => c.type === 'wheel')
 					if (wheelControl) context.keyUpById(wheelControl.id)
@@ -153,6 +160,15 @@ export class LoupedeckWrapper implements SurfaceInstance {
 						context.keyUpById(pressedId)
 					}
 				}
+			}
+		})
+
+		this.#deck.on('touchmove', (data) => {
+			for (const touch of data.changedTouches) {
+				const t = this.#tileSwipe.get(touch.id)
+				void this.#tileSwipe.move(touch.id, touch.x, touch.y)?.then((took) => {
+					if (took && t) this.#tileSwipe.release(t, releaseTile)
+				})
 			}
 		})
 
