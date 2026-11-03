@@ -2,6 +2,7 @@ import type { ModuleLogger } from '@companion-surface/base'
 
 const DragUrl = 'http://127.0.0.1:47113/volume/drag'
 const SlideUrl = 'http://127.0.0.1:47117/ai/slide'
+const EmojiUrl = 'http://127.0.0.1:47128/emoji'
 
 export class StripDrag {
 	readonly #logger: ModuleLogger
@@ -27,5 +28,12 @@ export class StripDrag {
 
 	end(touchId: number): void {
 		this.#lastY.delete(touchId)
+	}
+
+	/** Strip touch edges for the emoji picker; the daemon ignores them while the picker is closed */
+	edge(edge: 'start' | 'end', side: 'l' | 'r', y: number): void {
+		fetch(`${EmojiUrl}/${edge}?s=${side}&y=${y}`, { method: 'POST' }).catch((e) =>
+			this.#logger.warn(`Emoji ${edge} failed: ${e}`),
+		)
 	}
 }

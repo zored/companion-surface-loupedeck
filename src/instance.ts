@@ -118,6 +118,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		})
 		this.#deck.on('touchstart', (data) => {
 			for (const touch of data.changedTouches) {
+				this.#stripEdge('start', touch.target.screen, touch.y)
 				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
 					this.#haptics.press(touch.target.control.id)
 					context.keyDownById(touch.target.control.id)
@@ -138,6 +139,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			for (const touch of data.changedTouches) {
 				this.#haptics.slideEnd(touch.id)
 				this.#stripDrag.end(touch.id)
+				this.#stripEdge('end', touch.target.screen, touch.y)
 				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
 					this.#haptics.release(touch.target.control.id)
 					context.keyUpById(touch.target.control.id)
@@ -298,6 +300,12 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		if (signal.aborted) return
 
 		await this.#deck.drawBuffer(LoupedeckDisplayId.Center, buffer, LoupedeckBufferFormat.RGB, width, height, 0, 0)
+	}
+
+	#stripEdge(edge: 'start' | 'end', screen: LoupedeckDisplayId, y: number): void {
+		if (!this.#useTouchStrips) return
+		if (screen === LoupedeckDisplayId.Left) this.#stripDrag.edge(edge, 'l', y)
+		else if (screen === LoupedeckDisplayId.Right) this.#stripDrag.edge(edge, 'r', y)
 	}
 
 	/** Resolve the loupedeck display for a strip, or undefined if the model has no such strip */
