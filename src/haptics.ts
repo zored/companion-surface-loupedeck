@@ -1,8 +1,6 @@
 import type { ModuleLogger, SomeCompanionInputField } from '@companion-surface/base'
 import { LoupedeckDevice, LoupedeckVibratePattern } from '@loupedeck/node'
 
-const MinSlideTickIntervalMs = 30
-
 const PatternChoices = [
 	{ id: 'none', label: 'None' },
 	...Object.entries(LoupedeckVibratePattern)
@@ -38,24 +36,6 @@ export function buildHapticConfigFields(): SomeCompanionInputField[] {
 			default: '',
 			isVisibleExpression: `$(options:hapticPressPattern) != 'none'`,
 		},
-		{
-			id: 'hapticSlidePattern',
-			type: 'dropdown',
-			label: 'Haptic ticks while sliding on a strip',
-			tooltip: 'Vibrate briefly each time a touch slides one step along a touch strip',
-			default: 'none',
-			choices: PatternChoices,
-		},
-		{
-			id: 'hapticSlideStep',
-			type: 'number',
-			label: 'Haptic tick step (px)',
-			tooltip: 'Distance along the strip between ticks. The strip is 270px tall',
-			default: 20,
-			min: 1,
-			max: 270,
-			isVisibleExpression: `$(options:hapticSlidePattern) != 'none'`,
-		},
 	]
 }
 
@@ -69,14 +49,10 @@ export class Haptics {
 	readonly #deck: LoupedeckDevice
 	readonly #logger: ModuleLogger
 	readonly #holdTimers = new Map<string, NodeJS.Timeout>()
-	readonly #slideSteps = new Map<number, number>()
 
 	#pressPattern: LoupedeckVibratePattern | null = null
 	#holdMs = 0
 	#holdControls = new Set<string>()
-	#slidePattern: LoupedeckVibratePattern | null = null
-	#slideStep = 20
-	#lastSlideTick = 0
 
 	constructor(deck: LoupedeckDevice, logger: ModuleLogger) {
 		this.#deck = deck
@@ -92,8 +68,6 @@ export class Haptics {
 				.map((id) => id.trim())
 				.filter((id) => id !== ''),
 		)
-		this.#slidePattern = parsePattern(config.hapticSlidePattern)
-		this.#slideStep = Math.max(1, Number(config.hapticSlideStep) || 20)
 	}
 
 	press(controlId: string): void {
@@ -116,24 +90,6 @@ export class Haptics {
 	release(controlId: string): void {
 		clearTimeout(this.#holdTimers.get(controlId))
 		this.#holdTimers.delete(controlId)
-	}
-
-	slide(touchId: number, y: number): void {
-		if (this.#slidePattern === null) return
-
-		const step = Math.floor(y / this.#slideStep)
-		const prevStep = this.#slideSteps.get(touchId)
-		this.#slideSteps.set(touchId, step)
-		if (prevStep === undefined || prevStep === step) return
-
-		const now = Date.now()
-		if (now - this.#lastSlideTick < MinSlideTickIntervalMs) return
-		this.#lastSlideTick = now
-		this.#vibrate(this.#slidePattern)
-	}
-
-	slideEnd(touchId: number): void {
-		this.#slideSteps.delete(touchId)
 	}
 
 	close(): void {
