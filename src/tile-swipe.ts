@@ -1,4 +1,5 @@
 import type { ModuleLogger } from '@companion-surface/base'
+import { userDir, type Orientation } from './orientation.js'
 
 const SwipeUrl = 'http://127.0.0.1:47113/tile/swipe'
 const MinDistance = 40
@@ -27,13 +28,13 @@ export class TileSwipe {
 	}
 
 	/** Resolves true once the daemon took the swipe: the caller releases the tile, the daemon skips its tap */
-	move(touchId: number, x: number, y: number): Promise<boolean> | undefined {
+	move(touchId: number, x: number, y: number, orientation: Orientation): Promise<boolean> | undefined {
 		const t = this.#touches.get(touchId)
 		if (!t || t.swipe || Date.now() - t.at > MaxMs) return undefined
 		const dx = x - t.x
 		const dy = y - t.y
 		if (Math.max(Math.abs(dx), Math.abs(dy)) < MinDistance) return undefined
-		const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'r' : 'l') : dy > 0 ? 'd' : 'u'
+		const dir = userDir(orientation, Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'r' : 'l') : dy > 0 ? 'd' : 'u')
 		t.swipe = fetch(`${SwipeUrl}?id=${t.controlId}&dir=${dir}`, { method: 'POST' }).then(
 			(r) => r.status !== 404,
 			(e) => {

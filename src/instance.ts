@@ -21,6 +21,12 @@ import { ImageWriteQueue } from './write-queue.js'
 import { Haptics } from './haptics.js'
 import { StripDrag } from './strip-drag.js'
 import { TileSwipe } from './tile-swipe.js'
+import { loadOrientation, nextOrientation, rotateRgb, stripFlipped, tileTurn, type Orientation } from './orientation.js'
+
+const OrientationKnob = 'encoder-0-7'
+const OrientationHoldMs = 3000
+const OrientationRepeatMs = 2000
+const StripTouchHeight = 270
 
 interface DisplayFaderValue {
 	color: RGBColor
@@ -53,6 +59,10 @@ export class LoupedeckWrapper implements SurfaceInstance {
 	#pressedStripCells = new Map<number, string>()
 	/** Last image drawn for each strip cell (keyed by cell control id), so buttons can be repainted on mode switch */
 	#stripCellImages = new Map<string, Uint8Array>()
+	/** Last image drawn for each lcd key, so tiles can be repainted when the orientation changes */
+	#tileImages = new Map<string, Uint8Array>()
+	#orientation: Orientation = loadOrientation()
+	#orientationTimer: NodeJS.Timeout | undefined
 
 	/** Coalescing queue for fader draws, keyed by strip display, so fast dragging can't fall behind */
 	readonly #faderDrawQueue = new ImageWriteQueue<StripDisplayId, DisplayFaderValue>(
@@ -110,13 +120,18 @@ export class LoupedeckWrapper implements SurfaceInstance {
 
 		this.#deck.on('down', (control) => {
 			this.#haptics.press(control.id)
+			if (control.id === OrientationKnob) {
+				this.#orientationTimer = setTimeout(() => this.#turn(), OrientationHoldMs)
+			}
 			context.keyDownById(control.id)
 		})
 		this.#deck.on('up', (control) => {
 			this.#haptics.release(control.id)
+			if (control.id === OrientationKnob) clearTimeout(this.#orientationTimer)
 			context.keyUpById(control.id)
 		})
 		this.#deck.on('rotate', (control, delta) => {
+			if (control.id === OrientationKnob) clearTimeout(this.#orientationTimer)
 			if (delta < 0) {
 				context.rotateLeftById(control.id)
 			} else if (delta > 0) {
@@ -125,7 +140,8 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		})
 		this.#deck.on('touchstart', (data) => {
 			for (const touch of data.changedTouches) {
-				this.#stripEdge('start', touch.target.screen, touch.y)
+				const y = this.#stripY(touch.target.screen, touch.y)
+				this.#stripEdge('start', touch.target.screen, y)
 				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
 					this.#tileSwipe.start(touch.id, touch.target.control.id, touch.x, touch.y)
 					this.#haptics.press(touch.target.control.id)
@@ -135,7 +151,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 					if (wheelControl) context.keyDownById(wheelControl.id)
 				} else if (this.#effectiveStripMode === 'buttons') {
 					const stripId = stripIdFromScreen(touch.target.screen)
-					const controlId = stripId && this.#stripCellControlIdForTouch(stripId, touch.y)
+					const controlId = stripId && this.#stripCellControlIdForTouch(stripId, y)
 					if (controlId) {
 						this.#pressedStripCells.set(touch.id, controlId)
 						context.keyDownById(controlId)
@@ -146,7 +162,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#deck.on('touchend', (data) => {
 			for (const touch of data.changedTouches) {
 				this.#stripDrag.end(touch.id)
-				this.#stripEdge('end', touch.target.screen, touch.y)
+				this.#stripEdge('end', touch.target.screen, this.#stripY(touch.target.screen, touch.y))
 				if (this.#tileSwipe.get(touch.id)) {
 					this.#tileSwipe.end(touch.id, releaseTile)
 				} else if (touch.target.screen == LoupedeckDisplayId.Wheel) {
@@ -166,7 +182,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#deck.on('touchmove', (data) => {
 			for (const touch of data.changedTouches) {
 				const t = this.#tileSwipe.get(touch.id)
-				void this.#tileSwipe.move(touch.id, touch.x, touch.y)?.then((took) => {
+				void this.#tileSwipe.move(touch.id, touch.x, touch.y, this.#orientation)?.then((took) => {
 					if (took && t) this.#tileSwipe.release(t, releaseTile)
 				})
 			}
@@ -179,14 +195,15 @@ export class LoupedeckWrapper implements SurfaceInstance {
 					const display = touch.target.screen
 					if (display !== LoupedeckDisplayId.Left && display !== LoupedeckDisplayId.Right) continue
 
-					const val = Math.min(touch.y + 7, 256) // map the touch screen height of 270 to 256 by capping top and bottom 7 pixels
+					const y = this.#stripY(display, touch.y)
+					const val = Math.min(y + 7, 256) // map the touch screen height of 270 to 256 by capping top and bottom 7 pixels
 					const variable = display === LoupedeckDisplayId.Left ? 'leftFaderValueVariable' : 'rightFaderValueVariable'
 					context.sendVariableValue(variable, this.#invertFaderValues ? 256 - val : val)
 
 					// In buttons mode the strip cells are pressed by touchstart/touchend; only the position is reported here
 					if (mode !== 'slider') {
-						if (display === LoupedeckDisplayId.Left) this.#stripDrag.move(touch.id, touch.y)
-						else this.#stripDrag.slide(touch.id, touch.y)
+						if (display === LoupedeckDisplayId.Left) this.#stripDrag.move(touch.id, y)
+						else this.#stripDrag.slide(touch.id, y)
 						continue
 					}
 					this.#displayFaderValues[display].value = val
@@ -201,6 +218,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		await this.blank()
 	}
 	async close(): Promise<void> {
+		clearTimeout(this.#orientationTimer)
 		this.#haptics.close()
 		await this.#deck.blankDevice(true, true).catch(() => null)
 
@@ -262,7 +280,8 @@ export class LoupedeckWrapper implements SurfaceInstance {
 				})
 			} else if (control.feedbackType === 'lcd') {
 				if (drawProps.image) {
-					await this.#deck.drawKeyBuffer(drawProps.controlId, drawProps.image, LoupedeckBufferFormat.RGB)
+					this.#tileImages.set(drawProps.controlId, drawProps.image)
+					await this.#drawTile(drawProps.controlId, drawProps.image)
 				} else {
 					throw new Error(`Cannot draw for Loupedeck without image`)
 				}
@@ -314,6 +333,32 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		if (signal.aborted) return
 
 		await this.#deck.drawBuffer(LoupedeckDisplayId.Center, buffer, LoupedeckBufferFormat.RGB, width, height, 0, 0)
+	}
+
+	async #drawTile(controlId: string, image: Uint8Array): Promise<void> {
+		const size = this.#deck.lcdKeySize
+		await this.#deck.drawKeyBuffer(
+			controlId,
+			rotateRgb(image, size, size, tileTurn(this.#orientation)),
+			LoupedeckBufferFormat.RGB,
+		)
+	}
+
+	/** Strip touch position in the coordinates of the picture drawn on it */
+	#stripY(screen: LoupedeckDisplayId, y: number): number {
+		const stripId = stripIdFromScreen(screen)
+		return stripId && stripFlipped(this.#orientation, stripId) ? StripTouchHeight - y : y
+	}
+
+	#turn(): void {
+		this.#orientationTimer = setTimeout(() => this.#turn(), OrientationRepeatMs)
+		this.#orientation = nextOrientation(this.#orientation)
+		this.#logger.info(`Orientation ${this.#orientation}`)
+		this.#haptics.press(OrientationKnob)
+		for (const [controlId, image] of this.#tileImages) {
+			this.#drawTile(controlId, image).catch((e) => this.#logger.error(`Drawing ${controlId} failed: ${e}`))
+		}
+		this.#redrawStripButtons()
 	}
 
 	#stripEdge(edge: 'start' | 'end', screen: LoupedeckDisplayId, y: number): void {
@@ -383,16 +428,18 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		const strip = this.#stripDisplay(stripId)
 		if (!strip) return
 
+		const cellWidth = strip.width - SideStripXPadding * 2
 		const cellHeight = Math.floor((strip.height - SideStripYPadding * 2) / strip.rowSpan)
+		const flipped = stripFlipped(this.#orientation, stripId)
 		await this.#deck
 			.drawBuffer(
 				strip.display,
-				image,
+				flipped ? rotateRgb(image, cellWidth, cellHeight, 180) : image,
 				LoupedeckBufferFormat.RGB,
-				strip.width - SideStripXPadding * 2,
+				cellWidth,
 				cellHeight,
 				SideStripXPadding,
-				cellIndex * cellHeight + SideStripYPadding,
+				(flipped ? strip.rowSpan - 1 - cellIndex : cellIndex) * cellHeight + SideStripYPadding,
 			)
 			.catch((e) => {
 				this.#logger.error(`Drawing strip cell ${stripId}-${cellIndex} to loupedeck failed: ${e}`)
