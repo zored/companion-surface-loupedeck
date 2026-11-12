@@ -21,6 +21,7 @@ import { ImageWriteQueue } from './write-queue.js'
 import { Haptics } from './haptics.js'
 import { StripDrag } from './strip-drag.js'
 import { TileSwipe } from './tile-swipe.js'
+import { moonTile, SleepTile } from './moon.js'
 import { loadOrientation, nextOrientation, rotateRgb, stripFlipped, tileTurn, type Orientation } from './orientation.js'
 
 const OrientationKnob = 'encoder-0-7'
@@ -221,6 +222,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		clearTimeout(this.#orientationTimer)
 		this.#haptics.close()
 		await this.#deck.blankDevice(true, true).catch(() => null)
+		await this.#drawSleepMoon().catch((e) => this.#logger.warn(`Drawing the sleep moon failed: ${e}`))
 
 		await this.#deck.close()
 	}
@@ -342,6 +344,16 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			rotateRgb(image, size, size, tileTurn(this.#orientation)),
 			LoupedeckBufferFormat.RGB,
 		)
+	}
+
+	/** Companion closes the surface when the Mac goes to sleep; the moon stays on the dark device until it reopens */
+	async #drawSleepMoon(): Promise<void> {
+		const tile = this.#deck.controls.find(
+			(c) =>
+				c.type === 'button' && c.feedbackType === 'lcd' && c.row === SleepTile.row && c.column === SleepTile.column,
+		)
+		if (!tile) throw new Error(`No lcd tile at ${SleepTile.row}/${SleepTile.column}`)
+		await this.#drawTile(tile.id, moonTile(this.#deck.lcdKeySize))
 	}
 
 	/** Strip touch position in the coordinates of the picture drawn on it */
