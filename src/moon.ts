@@ -1,7 +1,7 @@
 /** Where the daemon's keep-awake tile sits in the Companion grid (тайл ряд 1, колонка 4) */
 export const SleepTile = { row: 0, column: 5 }
 
-const Gray = [0x8e, 0x8e, 0x93]
+const White = [0xff, 0xff, 0xff]
 const IconShare = 0.56
 const Samples = 4
 
@@ -12,7 +12,7 @@ function inMoon(u: number, v: number): boolean {
 	return disc && !cut
 }
 
-/** Gray crescent centered on a black RGB tile, the daemon's sleep moon drawn without an SVG renderer */
+/** White crescent centered on a black RGB tile, the daemon's sleep moon drawn without an SVG renderer */
 export function moonTile(size: number): Uint8Array {
 	const out = new Uint8Array(size * size * 3)
 	const icon = size * IconShare
@@ -29,7 +29,7 @@ export function moonTile(size: number): Uint8Array {
 			}
 			const cover = hits / (Samples * Samples)
 			const i = (y * size + x) * 3
-			for (let c = 0; c < 3; c++) out[i + c] = Math.round(Gray[c] * cover)
+			for (let c = 0; c < 3; c++) out[i + c] = Math.round(White[c] * cover)
 		}
 	}
 	return out
