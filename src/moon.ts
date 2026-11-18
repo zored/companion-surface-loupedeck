@@ -5,14 +5,16 @@ const White = [0xff, 0xff, 0xff]
 const IconShare = 0.56
 const Samples = 4
 
-/** Bootstrap moon-fill as two circles in its 16-unit box: the disc minus the cut */
+const Stroke = 1.03
+
+/** Bootstrap moon as two circles in its 16-unit box: the disc minus the cut, hollowed by a stroke-wide inner crescent */
 function inMoon(u: number, v: number): boolean {
-	const disc = (u - 8.34) ** 2 + (v - 7.71) ** 2 <= 8.3 ** 2
-	const cut = (u - 12.52) ** 2 + (v - 4.6) ** 2 <= 7.3 ** 2
-	return disc && !cut
+	const crescent = (inset: number) =>
+		(u - 8.34) ** 2 + (v - 7.71) ** 2 <= (8.3 - inset) ** 2 && (u - 12.52) ** 2 + (v - 4.6) ** 2 > (7.3 + inset) ** 2
+	return crescent(0) && !crescent(Stroke)
 }
 
-/** White crescent centered on a black RGB tile, the daemon's sleep moon drawn without an SVG renderer */
+/** Hollow white crescent centered on a black RGB tile, the daemon's sleep moon drawn without an SVG renderer */
 export function moonTile(size: number): Uint8Array {
 	const out = new Uint8Array(size * size * 3)
 	const icon = size * IconShare
