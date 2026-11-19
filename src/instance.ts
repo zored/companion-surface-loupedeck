@@ -23,6 +23,7 @@ import { StripDrag } from './strip-drag.js'
 import { TileSwipe } from './tile-swipe.js'
 import { moonTile, SleepTile } from './moon.js'
 import { loadOrientation, nextOrientation, rotateRgb, stripFlipped, tileTurn, type Orientation } from './orientation.js'
+import { PhotoFeed, type PhotoCell } from './photo.js'
 
 const OrientationKnob = 'encoder-0-7'
 const OrientationHoldMs = 3000
@@ -32,6 +33,13 @@ const StripTouchHeight = 270
 interface DisplayFaderValue {
 	color: RGBColor
 	value: number
+}
+
+interface ShownPhoto {
+	id: string
+	keep: PhotoCell[]
+	/** The whole center picture in device coordinates, already turned */
+	image?: Uint8Array
 }
 
 interface StripCellDrawItem {
@@ -64,6 +72,12 @@ export class LoupedeckWrapper implements SurfaceInstance {
 	#tileImages = new Map<string, Uint8Array>()
 	#orientation: Orientation = loadOrientation()
 	#orientationTimer: NodeJS.Timeout | undefined
+	readonly #photoFeed: PhotoFeed
+	/** Chat photo over the tiles; Companion's pictures of covered tiles wait in #tileImages */
+	#photo: ShownPhoto | null = null
+	#photoGen = 0
+	/** Touches that closed the photo: their release goes nowhere */
+	#photoTouches = new Set<number>()
 
 	/** Coalescing queue for fader draws, keyed by strip display, so fast dragging can't fall behind */
 	readonly #faderDrawQueue = new ImageWriteQueue<StripDisplayId, DisplayFaderValue>(
@@ -112,6 +126,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#haptics = new Haptics(deck, this.#logger)
 		this.#stripDrag = new StripDrag(this.#logger)
 		this.#tileSwipe = new TileSwipe(this.#logger)
+		this.#photoFeed = new PhotoFeed(this.#logger, (id, keep) => this.#photoState(id, keep))
 		const releaseTile = (controlId: string) => {
 			this.#haptics.release(controlId)
 			context.keyUpById(controlId)
@@ -143,7 +158,12 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			for (const touch of data.changedTouches) {
 				const y = this.#stripY(touch.target.screen, touch.y)
 				this.#stripEdge('start', touch.target.screen, y)
-				if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
+				if (touch.target.control !== undefined && this.#covered(touch.target.control.id)) {
+					this.#photoTouches.add(touch.id)
+					this.#haptics.press(touch.target.control.id)
+					this.#hidePhoto()
+					this.#photoFeed.close()
+				} else if (touch.target.control !== undefined && touch.target.screen === LoupedeckDisplayId.Center) {
 					this.#tileSwipe.start(touch.id, touch.target.control.id, touch.x, touch.y)
 					this.#haptics.press(touch.target.control.id)
 					context.keyDownById(touch.target.control.id)
@@ -164,7 +184,9 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			for (const touch of data.changedTouches) {
 				this.#stripDrag.end(touch.id)
 				this.#stripEdge('end', touch.target.screen, this.#stripY(touch.target.screen, touch.y))
-				if (this.#tileSwipe.get(touch.id)) {
+				if (this.#photoTouches.delete(touch.id)) {
+					if (touch.target.control !== undefined) this.#haptics.release(touch.target.control.id)
+				} else if (this.#tileSwipe.get(touch.id)) {
 					this.#tileSwipe.end(touch.id, releaseTile)
 				} else if (touch.target.screen == LoupedeckDisplayId.Wheel) {
 					const wheelControl = this.#deck.controls.find((c) => c.type === 'wheel')
@@ -217,8 +239,10 @@ export class LoupedeckWrapper implements SurfaceInstance {
 	async init(): Promise<void> {
 		// Start with blanking it
 		await this.blank()
+		this.#photoFeed.start()
 	}
 	async close(): Promise<void> {
+		this.#photoFeed.stop()
 		clearTimeout(this.#orientationTimer)
 		this.#haptics.close()
 		await this.#deck.blankDevice(true, true).catch(() => null)
@@ -283,6 +307,7 @@ export class LoupedeckWrapper implements SurfaceInstance {
 			} else if (control.feedbackType === 'lcd') {
 				if (drawProps.image) {
 					this.#tileImages.set(drawProps.controlId, drawProps.image)
+					if (this.#covered(drawProps.controlId)) return
 					await this.#drawTile(drawProps.controlId, drawProps.image)
 				} else {
 					throw new Error(`Cannot draw for Loupedeck without image`)
@@ -367,10 +392,83 @@ export class LoupedeckWrapper implements SurfaceInstance {
 		this.#orientation = nextOrientation(this.#orientation)
 		this.#logger.info(`Orientation ${this.#orientation}`)
 		this.#haptics.press(OrientationKnob)
+		const photo = this.#photo
 		for (const [controlId, image] of this.#tileImages) {
+			if (this.#covered(controlId)) continue
 			this.#drawTile(controlId, image).catch((e) => this.#logger.error(`Drawing ${controlId} failed: ${e}`))
 		}
+		if (photo) this.#showPhoto(photo.id, photo.keep)
 		this.#redrawStripButtons()
+	}
+
+	/** Center tiles a photo spreads over: all but the kept ones */
+	#photoTiles(keep: PhotoCell[]) {
+		return this.#deck.controls.filter(
+			(c) =>
+				c.type === 'button' &&
+				c.feedbackType === 'lcd' &&
+				c.lcdPosition?.display === LoupedeckDisplayId.Center &&
+				!keep.some((k) => k.row === c.row && k.column === c.column),
+		)
+	}
+
+	#covered(controlId: string): boolean {
+		const photo = this.#photo
+		return !!photo?.image && this.#photoTiles(photo.keep).some((c) => c.id === controlId)
+	}
+
+	#photoState(id: string, keep: PhotoCell[]): void {
+		if (id === '') {
+			this.#hidePhoto()
+			return
+		}
+		if (this.#photo?.id === id) return
+		this.#showPhoto(id, keep)
+	}
+
+	/** Fetches the photo at the size the user sees the tile grid, turns it to the device and cuts it into tiles */
+	#showPhoto(id: string, keep: PhotoCell[]): void {
+		const gen = ++this.#photoGen
+		const prev = this.#photo
+		this.#photo = { id, keep, image: prev?.id === id ? prev.image : undefined }
+		const { width, height } = this.#deck.displayMain
+		const turn = tileTurn(this.#orientation)
+		const [w, h] = turn % 180 === 0 ? [width, height] : [height, width]
+		this.#photoFeed
+			.image(id, w, h)
+			.then(async (rgb) => {
+				if (gen !== this.#photoGen) return
+				const image = rotateRgb(rgb, w, h, turn)
+				this.#photo = { id, keep, image }
+				const size = this.#deck.lcdKeySize
+				for (const c of this.#photoTiles(keep)) {
+					if (gen !== this.#photoGen) return
+					if (c.type !== 'button' || !c.lcdPosition) continue
+					const tile = new Uint8Array(size * size * 3)
+					for (let y = 0; y < size; y++) {
+						const from = ((c.lcdPosition.y + y) * width + c.lcdPosition.x) * 3
+						tile.set(image.subarray(from, from + size * 3), y * size * 3)
+					}
+					await this.#deck.drawKeyBuffer(c.id, tile, LoupedeckBufferFormat.RGB)
+				}
+			})
+			.catch((e) => {
+				this.#logger.error(`Drawing photo ${id} failed: ${e}`)
+				if (gen === this.#photoGen) this.#hidePhoto()
+			})
+	}
+
+	/** Gives the tiles back to Companion's pictures */
+	#hidePhoto(): void {
+		const photo = this.#photo
+		if (!photo) return
+		this.#photoGen++
+		this.#photo = null
+		if (!photo.image) return
+		for (const c of this.#photoTiles(photo.keep)) {
+			const image = this.#tileImages.get(c.id)
+			if (image) this.#drawTile(c.id, image).catch((e) => this.#logger.error(`Drawing ${c.id} failed: ${e}`))
+		}
 	}
 
 	#stripEdge(edge: 'start' | 'end', screen: LoupedeckDisplayId, y: number): void {
